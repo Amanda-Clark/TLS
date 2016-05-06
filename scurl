@@ -10,18 +10,10 @@ from dateutil import parser
 from OpenSSL import SSL, crypto
 PORT = 443
 
-def parsePassTerm(passTerm):
-    if passTerm == '--tlsv1.0':
-        encrypt = SSL.TLSv1_METHOD
-    if passTerm == '--tlsv1.1':
-        encrypt = SSL.TLSv1_1_METHOD
-    if passTerm == '--tlsv1.2':
-        encrypt = SSL.TLSv1_2_METHOD
-    if passTerm == '--sslv3':
-        encrypt = SSL.SSLv3_METHOD
-    return encrypt
 
 def chkCrlFile(sn):
+    """Simple look up to see if the cert serial number is in the
+    offending list file"""
     with open('crlfile.txt') as f:
         crlnums = [sns.strip() for sns in f]
         for crl in crlnums:
@@ -29,31 +21,32 @@ def chkCrlFile(sn):
                 return True
 
 
-def pyopenssl_check_expiration(asn1):
-    ''' Return the numbers of day before expiration. False if expired.'''
-    #try:
-    #expire_date = datetime.strptime(str(asn1), "%YYYY%mm%dd%HH%MM%SSZ")
-    expire_date = str(asn1)
-    print(expire_date)
-    # except
-    #     exit_error(1, 'Certificate date format unknow.')
-    #
-    # expire_in = expire_date - datetime.now()
-    # if expire_in.days > 0:
-    #     return expire_in.days
-    # else:
-    #     return False
+def checkStateCert(cert, numdays):
+    """Assuming allow stale certs option is passed, checks to see if
+    cert is > 20 days old"""
+    expdate =(cert.get_notAfter())
+    expdate = expdate.decode()
+    expdate = parser.parse(expdate)
+    dt = datetime.now()
+    utc = pytz.UTC
+    dt = utc.localize(dt)
+    if expdate < dt:
+        diff = expdate - dt
+        if int(diff.days) < int(numdays):
+            sys.stderr.write("This certificate is greater than "+numdays+" days old")
+            sys.exit(2)
 
 
 def verify_callback(connection, x509, errnum, errdepth, ok):
-
-        if not ok:
-            print("Bad Certs" + str(errnum) + ' '+ str(errdepth))
-        else:
-            print("Certs are fine")
+    """Standard OpenSSL callback function"""
+    if not ok:
+        print("Bad Certs" + str(errnum) + ' '+ str(errdepth))
+    else:
+        print("Certs are fine")
         return ok
 
 def recv_timeout(the_socket,timeout=2):
+    """Admittedly something I got online to help download content"""
     #make socket non blocking
     the_socket.setblocking(0)
 
@@ -87,96 +80,76 @@ def recv_timeout(the_socket,timeout=2):
 
     #join all parts to make final string
     return b''.join(total_data)
-#print(sock.recv(4096))
+
 
 def main():
     ciphs = ''
     useCrl = 0
     cacts = 0
-    expiration = 0
     numDays = 0
+    #Parse any command line arguments
     for param in sys.argv:
         if param[:6] =='--tlsv' or param[:6] == '--sslv':
             protver = param
         if param =='--ciphers':
             ind = sys.argv.index(param)
             ciphs = sys.argv[ind+1]
-
         if param[:4] == 'http':
             address = param
         if param == '--crlfile':
             useCrl = 1
         if param == '--cacerts':
             cacts == 1
-        if param == '--allow-state-certs':
-            expiration = 1
+        if param == '--allow-stale-certs':
             ind = sys.argv.index(param)
             numDays = sys.argv[ind+1]
 
-
-    protocol = parsePassTerm(protver)
     if not re.match(r'https\:', address):
         sys.stderr.write('Non HTTPS address')
     parsed = urlsplit(address)
     HOST = parsed.netloc
-#    if HOST.startswith('www.'):
-#        HOST = HOST[4:]
 
     context = SSL.Context(SSL.TLSv1_METHOD)
-    #SSL.TLS
+    if protver == '--tlsv1.0':
+        context = SSL.Context(SSL.TLSv1_METHOD)
+    if protver == '--tlsv1.1':
+        context = SSL.Context(SSL.TLSv1_1_METHOD)
+    if protver == '--tlsv1.2':
+        context = SSL.Context(SSL.TLSv1_2_METHOD)
+    if protver == '--sslv3':
+        context = SSL.Context(SSL.SSLv3_METHOD)
     context.load_verify_locations("cacerts.pem")
+
     if cacts == 1:
         context.set_verify(SSL.VERIFY_PEER | SSL.VERIFY_FAIL_IF_NO_PEER_CERT, verify_callback)
         context.set_options(SSL.OP_NO_SSLv2)
     if cacts == 0:
         context.set_options(SSL.OP_NO_SSLv2)
-    d = b"DHE-RSA-AES256-SHA:DHE-DSS-AES256-SHA:AES256-SHA:EDH-RSA-DES-CBC3-SHA:EDH-DSS-DES-CBC3-SHA:" \
-        b"DES-CBC3-SHA:DES-CBC3-MD5:DHE-RSA-AES128-SHA:DHE-DSS-AES128-SHA:AES128-SHA:DHE-RSA-SEED-SHA:" \
-        b"DHE-DSS-SEED-SHA:SEED-SHA:RC2-CBC-MD5:RC4-SHA:RC4-MD5:RC4-MD5:EDH-RSA-DES-CBC-SHA:EDH-DSS-DES-CBC-SHA:" \
-        b"DES-CBC-SHA:DES-CBC-MD5:EXP-EDH-RSA-DES-CBC-SHA:EXP-EDH-DSS-DES-CBC-SHA:EXP-DES-CBC-SHA:EXP-RC2-CBC-MD5:" \
-        b"EXP-RC2-CBC-MD5:EXP-RC4-MD5:EXP-RC4-MD5"
+
     ciphlist = ciphs.encode()
-    context.set_cipher_list(d)#ciphlist)#+
-    #"ECDH+AES128:DH+AES:ECDH+3DES:DH+3DES:RSA+AESGCM:RSA+AES:RSA+3DES:" +
-    #"!aNULL:!MD5:!DSS")
-    # create socket and connect to server
+    context.set_cipher_list(ciphlist)
     sock = socket.socket()
     sock = SSL.Connection(context, sock)
     sock.set_tlsext_host_name(HOST.encode())
     sock.connect((HOST, PORT))
-
     sock.do_handshake()
     sock.sendall("GET / HTTPS/1.1\r\n\r\n")
-    #cert = sock.get_peer_certificate()
-    #print(cert)
-    #neat stuff I am printing out
-    expiration = 1
-    if expiration == 1:
-        expdate =(sock.get_peer_certificate().get_notAfter())
-        expdate = expdate.decode()
-        expdate = parser.parse(expdate)
-        dt = datetime.now()
-        utc = pytz.UTC
-        # expdate = utc.localize(expdate)
-        dt = utc.localize(dt)
-
-
+    if int(numDays) > 0:
+        cert = sock.get_peer_certificate()
+        checkStateCert(cert, numDays)
 
     print(sock.get_peer_certificate().digest('sha256'))
     print(sock.get_peer_certificate().get_subject())
     print('Serial Number is: '+str(sock.get_peer_certificate().get_serial_number()))
-    cert = sock.get_peer_certificate()
-    #pyopenssl_check_expiration(cert)
     sn = str(sock.get_peer_certificate().get_serial_number())
     if useCrl == 1:
         if chkCrlFile(sn):
             sys.stderr.write("Certificate was in CRLFILE")
+            sys.exit(2)
 
     foobar = sock.get_peer_certificate().get_pubkey()
     print(crypto.dump_publickey(crypto.FILETYPE_PEM, foobar))
-
     print("\n")
-
     print(recv_timeout(sock))
 
 if __name__ == '__main__':
