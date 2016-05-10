@@ -7,7 +7,7 @@ import sys
 from urllib.parse import urlsplit
 from datetime import datetime
 from dateutil import parser
-from OpenSSL import SSL, crypto
+from OpenSSL import SSL
 PORT = 443
 
 
@@ -87,6 +87,7 @@ def main():
     useCrl = 0
     cacts = 0
     numDays = 0
+    pinKeyToUse = ''
     #Parse any command line arguments
     for param in sys.argv:
         if param[:6] =='--tlsv' or param[:6] == '--sslv':
@@ -103,12 +104,16 @@ def main():
         if param == '--allow-stale-certs':
             ind = sys.argv.index(param)
             numDays = sys.argv[ind+1]
+        if param == '--pinnedpublickey':
+            ind = sys.argv.index(param)
+            pinKeyToUse = sys.argv[ind+1]
 
     if not re.match(r'https\:', address):
         sys.stderr.write('Non HTTPS address')
     parsed = urlsplit(address)
     HOST = parsed.netloc
 
+    #If no protocol specified, default to TLSv1
     context = SSL.Context(SSL.TLSv1_METHOD)
     if protver == '--tlsv1.0':
         context = SSL.Context(SSL.TLSv1_METHOD)
@@ -118,9 +123,9 @@ def main():
         context = SSL.Context(SSL.TLSv1_2_METHOD)
     if protver == '--sslv3':
         context = SSL.Context(SSL.SSLv3_METHOD)
-    context.load_verify_locations("cacerts.pem")
 
     if cacts == 1:
+        context.load_verify_locations("cacerts.pem")
         context.set_verify(SSL.VERIFY_PEER | SSL.VERIFY_FAIL_IF_NO_PEER_CERT, verify_callback)
         context.set_options(SSL.OP_NO_SSLv2)
     if cacts == 0:
@@ -137,18 +142,12 @@ def main():
     if int(numDays) > 0:
         cert = sock.get_peer_certificate()
         checkStateCert(cert, numDays)
-
-    print(sock.get_peer_certificate().digest('sha256'))
-    print(sock.get_peer_certificate().get_subject())
-    print('Serial Number is: '+str(sock.get_peer_certificate().get_serial_number()))
     sn = str(sock.get_peer_certificate().get_serial_number())
     if useCrl == 1:
         if chkCrlFile(sn):
             sys.stderr.write("Certificate was in CRLFILE")
             sys.exit(2)
 
-    foobar = sock.get_peer_certificate().get_pubkey()
-    print(crypto.dump_publickey(crypto.FILETYPE_PEM, foobar))
     print("\n")
     print(recv_timeout(sock))
 
